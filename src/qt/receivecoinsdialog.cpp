@@ -1,25 +1,26 @@
-// Copyright (c) 2011-2014 The Bitcoin developers
-// Distributed under the MIT/X11 software license, see the accompanying
+// Copyright (c) 2011-2014 The Bitcoin Core developers
+// Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
 #include "receivecoinsdialog.h"
 #include "ui_receivecoinsdialog.h"
 
-#include "walletmodel.h"
-#include "bitcoinunits.h"
 #include "addressbookpage.h"
-#include "optionsmodel.h"
-#include "guiutil.h"
-#include "receiverequestdialog.h"
 #include "addresstablemodel.h"
+#include "bitcoinunits.h"
+#include "guiutil.h"
+#include "optionsmodel.h"
+#include "receiverequestdialog.h"
 #include "recentrequeststablemodel.h"
+#include "scicon.h"
+#include "walletmodel.h"
 
 #include <QAction>
 #include <QCursor>
-#include <QMessageBox>
-#include <QTextDocument>
-#include <QScrollBar>
 #include <QItemSelection>
+#include <QMessageBox>
+#include <QScrollBar>
+#include <QTextDocument>
 
 ReceiveCoinsDialog::ReceiveCoinsDialog(QWidget *parent) :
     QDialog(parent),
@@ -33,6 +34,11 @@ ReceiveCoinsDialog::ReceiveCoinsDialog(QWidget *parent) :
     ui->receiveButton->setIcon(QIcon());
     ui->showRequestButton->setIcon(QIcon());
     ui->removeRequestButton->setIcon(QIcon());
+#else
+    ui->clearButton->setIcon(SingleColorIcon(":/icons/remove"));
+    ui->receiveButton->setIcon(SingleColorIcon(":/icons/receiving_addresses"));
+    ui->showRequestButton->setIcon(SingleColorIcon(":/icons/edit"));
+    ui->removeRequestButton->setIcon(SingleColorIcon(":/icons/remove"));
 #endif
 
     // context menu actions
@@ -61,28 +67,26 @@ void ReceiveCoinsDialog::setModel(WalletModel *model)
 
     if(model && model->getOptionsModel())
     {
+        model->getRecentRequestsTableModel()->sort(RecentRequestsTableModel::Date, Qt::DescendingOrder);
         connect(model->getOptionsModel(), SIGNAL(displayUnitChanged(int)), this, SLOT(updateDisplayUnit()));
         updateDisplayUnit();
 
-        ui->recentRequestsView->setModel(model->getRecentRequestsTableModel());
-        ui->recentRequestsView->setAlternatingRowColors(true);
-        ui->recentRequestsView->setSelectionBehavior(QAbstractItemView::SelectRows);
-        ui->recentRequestsView->setSelectionMode(QAbstractItemView::ContiguousSelection);
-        ui->recentRequestsView->horizontalHeader()->resizeSection(RecentRequestsTableModel::Date, 130);
-        ui->recentRequestsView->horizontalHeader()->resizeSection(RecentRequestsTableModel::Label, 120);
-#if QT_VERSION < 0x050000
-        ui->recentRequestsView->horizontalHeader()->setResizeMode(RecentRequestsTableModel::Message, QHeaderView::Stretch);
-#else
-        ui->recentRequestsView->horizontalHeader()->setSectionResizeMode(RecentRequestsTableModel::Message, QHeaderView::Stretch);
-#endif
-        ui->recentRequestsView->horizontalHeader()->resizeSection(RecentRequestsTableModel::Amount, 100);
+        QTableView* tableView = ui->recentRequestsView;
 
-        model->getRecentRequestsTableModel()->sort(RecentRequestsTableModel::Date, Qt::DescendingOrder);
+        tableView->verticalHeader()->hide();
+        tableView->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        tableView->setModel(model->getRecentRequestsTableModel());
+        tableView->setAlternatingRowColors(true);
+        tableView->setSelectionBehavior(QAbstractItemView::SelectRows);
+        tableView->setSelectionMode(QAbstractItemView::ContiguousSelection);
+        tableView->setColumnWidth(RecentRequestsTableModel::Date, DATE_COLUMN_WIDTH);
+        tableView->setColumnWidth(RecentRequestsTableModel::Label, LABEL_COLUMN_WIDTH);
 
-        connect(ui->recentRequestsView->selectionModel(),
-            SIGNAL(selectionChanged(QItemSelection, QItemSelection)),
-            this,
-            SLOT(on_recentRequestsView_selectionChanged(QItemSelection, QItemSelection)));
+        connect(tableView->selectionModel(),
+            SIGNAL(selectionChanged(QItemSelection, QItemSelection)), this,
+            SLOT(recentRequestsView_selectionChanged(QItemSelection, QItemSelection)));
+        // Last 2 columns are set by the columnResizingFixer, when the table geometry is ready.
+        columnResizingFixer = new GUIUtil::TableViewLastColumnResizingFixer(tableView, AMOUNT_MINIMUM_COLUMN_WIDTH, DATE_COLUMN_WIDTH);
     }
 }
 
@@ -167,8 +171,7 @@ void ReceiveCoinsDialog::on_recentRequestsView_doubleClicked(const QModelIndex &
     dialog->show();
 }
 
-void ReceiveCoinsDialog::on_recentRequestsView_selectionChanged(const QItemSelection &selected,
-                                                                const QItemSelection &deselected)
+void ReceiveCoinsDialog::recentRequestsView_selectionChanged(const QItemSelection &selected, const QItemSelection &deselected)
 {
     // Enable Show/Remove buttons only if anything is selected.
     bool enable = !ui->recentRequestsView->selectionModel()->selectedRows().isEmpty();
@@ -198,6 +201,14 @@ void ReceiveCoinsDialog::on_removeRequestButton_clicked()
     // correct for selection mode ContiguousSelection
     QModelIndex firstIndex = selection.at(0);
     model->getRecentRequestsTableModel()->removeRows(firstIndex.row(), selection.length(), firstIndex.parent());
+}
+
+// We override the virtual resizeEvent of the QWidget to adjust tables column
+// sizes as the tables width is proportional to the dialogs width.
+void ReceiveCoinsDialog::resizeEvent(QResizeEvent *event)
+{
+    QWidget::resizeEvent(event);
+    columnResizingFixer->stretchColumnWidth(RecentRequestsTableModel::Message);
 }
 
 void ReceiveCoinsDialog::keyPressEvent(QKeyEvent *event)
