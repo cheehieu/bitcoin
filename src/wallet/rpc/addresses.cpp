@@ -2,6 +2,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <config/bitcoin-config.h> // IWYU pragma: keep
+
 #include <core_io.h>
 #include <key_io.h>
 #include <rpc/util.h>
@@ -391,6 +393,7 @@ class DescribeWalletAddressVisitor
 public:
     const SigningProvider * const provider;
 
+    // NOLINTNEXTLINE(misc-no-recursion)
     void ProcessSubScript(const CScript& subscript, UniValue& obj) const
     {
         // Always present: script type and redeemscript
@@ -441,6 +444,7 @@ public:
         return obj;
     }
 
+    // NOLINTNEXTLINE(misc-no-recursion)
     UniValue operator()(const ScriptHash& scripthash) const
     {
         UniValue obj(UniValue::VOBJ);
@@ -461,6 +465,7 @@ public:
         return obj;
     }
 
+    // NOLINTNEXTLINE(misc-no-recursion)
     UniValue operator()(const WitnessV0ScriptHash& id) const
     {
         UniValue obj(UniValue::VOBJ);
@@ -782,9 +787,8 @@ RPCHelpMan walletdisplayaddress()
                 throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, "Invalid address");
             }
 
-            if (!pwallet->DisplayAddress(dest)) {
-                throw JSONRPCError(RPC_MISC_ERROR, "Failed to display address");
-            }
+            util::Result<void> res = pwallet->DisplayAddress(dest);
+            if (!res) throw JSONRPCError(RPC_MISC_ERROR, util::ErrorString(res).original);
 
             UniValue result(UniValue::VOBJ);
             result.pushKV("address", request.params[0].get_str());

@@ -2,16 +2,13 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
-#if defined(HAVE_CONFIG_H)
-#include <config/bitcoin-config.h>
-#endif
+#include <config/bitcoin-config.h> // IWYU pragma: keep
 
 #include <chainparams.h>
 #include <chainparamsbase.h>
 #include <clientversion.h>
 #include <common/args.h>
 #include <common/system.h>
-#include <common/url.h>
 #include <compat/compat.h>
 #include <interfaces/init.h>
 #include <key.h>
@@ -28,7 +25,6 @@
 #include <tuple>
 
 const std::function<std::string(const char*)> G_TRANSLATION_FUN = nullptr;
-UrlDecodeFn* const URL_DECODE = nullptr;
 
 static void SetupWalletToolArgs(ArgsManager& argsman)
 {
@@ -132,10 +128,9 @@ MAIN_FUNCTION
         return EXIT_FAILURE;
     }
 
-    ECC_Start();
+    ECC_Context ecc_context{};
     if (!wallet::WalletTool::ExecuteWalletToolFunc(args, command->command)) {
         return EXIT_FAILURE;
     }
-    ECC_Stop();
     return EXIT_SUCCESS;
 }

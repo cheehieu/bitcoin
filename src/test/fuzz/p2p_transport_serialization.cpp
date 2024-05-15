@@ -25,7 +25,7 @@ std::vector<std::string> g_all_messages;
 
 void initialize_p2p_transport_serialization()
 {
-    ECC_Start();
+    static ECC_Context ecc_context{};
     SelectParams(ChainType::REGTEST);
     g_all_messages = getAllNetMessageTypes();
     std::sort(g_all_messages.begin(), g_all_messages.end());
@@ -354,6 +354,7 @@ std::unique_ptr<Transport> MakeV2Transport(NodeId nodeid, bool initiator, RNG& r
     } else {
         // If it's longer, generate it from the RNG. This avoids having large amounts of
         // (hopefully) irrelevant data needing to be stored in the fuzzer data.
+        garb.resize(garb_len);
         for (auto& v : garb) v = uint8_t(rng());
     }
     // Retrieve entropy

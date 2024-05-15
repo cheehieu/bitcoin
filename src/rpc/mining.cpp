@@ -3,6 +3,8 @@
 // Distributed under the MIT software license, see the accompanying
 // file COPYING or http://www.opensource.org/licenses/mit-license.php.
 
+#include <config/bitcoin-config.h> // IWYU pragma: keep
+
 #include <chain.h>
 #include <chainparams.h>
 #include <common/system.h>
@@ -27,15 +29,15 @@
 #include <script/descriptor.h>
 #include <script/script.h>
 #include <script/signingprovider.h>
-#include <timedata.h>
 #include <txmempool.h>
 #include <univalue.h>
+#include <util/signalinterrupt.h>
 #include <util/strencodings.h>
 #include <util/string.h>
+#include <util/time.h>
 #include <util/translation.h>
 #include <validation.h>
 #include <validationinterface.h>
-#include <warnings.h>
 
 #include <memory>
 #include <stdint.h>
@@ -118,7 +120,7 @@ static RPCHelpMan getnetworkhashps()
 {
     ChainstateManager& chainman = EnsureAnyChainman(request.context);
     LOCK(cs_main);
-    return GetNetworkHashPS(self.Arg<int>(0), self.Arg<int>(1), chainman.ActiveChain());
+    return GetNetworkHashPS(self.Arg<int>("nblocks"), self.Arg<int>("height"), chainman.ActiveChain());
 },
     };
 }
@@ -225,12 +227,12 @@ static RPCHelpMan generatetodescriptor()
             "\nGenerate 11 blocks to mydesc\n" + HelpExampleCli("generatetodescriptor", "11 \"mydesc\"")},
         [&](const RPCHelpMan& self, const JSONRPCRequest& request) -> UniValue
 {
-    const auto num_blocks{self.Arg<int>(0)};
-    const auto max_tries{self.Arg<uint64_t>(2)};
+    const auto num_blocks{self.Arg<int>("num_blocks")};
+    const auto max_tries{self.Arg<uint64_t>("maxtries")};
 
     CScript coinbase_script;
     std::string error;
-    if (!getScriptFromDescriptor(self.Arg<std::string>(1), coinbase_script, error)) {
+    if (!getScriptFromDescriptor(self.Arg<std::string>("descriptor"), coinbase_script, error)) {
         throw JSONRPCError(RPC_INVALID_ADDRESS_OR_KEY, error);
     }
 
@@ -383,7 +385,7 @@ static RPCHelpMan generateblock()
         LOCK(cs_main);
 
         BlockValidationState state;
-        if (!TestBlockValidity(state, chainman.GetParams(), chainman.ActiveChainstate(), block, chainman.m_blockman.LookupBlockIndex(block.hashPrevBlock), GetAdjustedTime, false, false)) {
+        if (!TestBlockValidity(state, chainman.GetParams(), chainman.ActiveChainstate(), block, chainman.m_blockman.LookupBlockIndex(block.hashPrevBlock), false, false)) {
             throw JSONRPCError(RPC_VERIFY_ERROR, strprintf("TestBlockValidity failed: %s", state.ToString()));
         }
     }
@@ -399,7 +401,7 @@ static RPCHelpMan generateblock()
     obj.pushKV("hash", block_out->GetHash().GetHex());
     if (!process_new_block) {
         DataStream block_ser;
-        block_ser << RPCTxSerParams(*block_out);
+        block_ser << TX_WITH_WITNESS(*block_out);
         obj.pushKV("hex", HexStr(block_ser));
     }
     return obj;
@@ -422,7 +424,14 @@ static RPCHelpMan getmininginfo()
                         {RPCResult::Type::NUM, "networkhashps", "The network hashes per second"},
                         {RPCResult::Type::NUM, "pooledtx", "The size of the mempool"},
                         {RPCResult::Type::STR, "chain", "current network name (main, test, signet, regtest)"},
-                        {RPCResult::Type::STR, "warnings", "any network and blockchain warnings"},
+                        (IsDeprecatedRPCEnabled("warnings") ?
+                            RPCResult{RPCResult::Type::STR, "warnings", "any network and blockchain warnings (DEPRECATED)"} :
+                            RPCResult{RPCResult::Type::ARR, "warnings", "any network and blockchain warnings (run with `-deprecatedrpc=warnings` to return the latest warning as a single string)",
+                            {
+                                {RPCResult::Type::STR, "", "warning"},
+                            }
+                            }
+                        ),
                     }},
                 RPCExamples{
                     HelpExampleCli("getmininginfo", "")
@@ -444,7 +453,7 @@ static RPCHelpMan getmininginfo()
     obj.pushKV("networkhashps",    getnetworkhashps().HandleRequest(request));
     obj.pushKV("pooledtx",         (uint64_t)mempool.size());
     obj.pushKV("chain", chainman.GetParams().GetChainTypeString());
-    obj.pushKV("warnings",         GetWarnings(false).original);
+    obj.pushKV("warnings", GetNodeWarnings(IsDeprecatedRPCEnabled("warnings")));
     return obj;
 },
     };
@@ -495,11 +504,12 @@ static RPCHelpMan getprioritisedtransactions()
         "Returns a map of all user-created (see prioritisetransaction) fee deltas by txid, and whether the tx is present in mempool.",
         {},
         RPCResult{
-            RPCResult::Type::OBJ_DYN, "prioritisation-map", "prioritisation keyed by txid",
+            RPCResult::Type::OBJ_DYN, "", "prioritisation keyed by txid",
             {
-                {RPCResult::Type::OBJ, "txid", "", {
+                {RPCResult::Type::OBJ, "<transactionid>", "", {
                     {RPCResult::Type::NUM, "fee_delta", "transaction fee delta in satoshis"},
                     {RPCResult::Type::BOOL, "in_mempool", "whether this transaction is currently in mempool"},
+                    {RPCResult::Type::NUM, "modified_fee", /*optional=*/true, "modified fee in satoshis. Only returned if in_mempool=true"},
                 }}
             },
         },
@@ -516,6 +526,9 @@ static RPCHelpMan getprioritisedtransactions()
                 UniValue result_inner{UniValue::VOBJ};
                 result_inner.pushKV("fee_delta", delta_info.delta);
                 result_inner.pushKV("in_mempool", delta_info.in_mempool);
+                if (delta_info.in_mempool) {
+                    result_inner.pushKV("modified_fee", *delta_info.modified_fee);
+                }
                 rpc_result.pushKV(delta_info.txid.GetHex(), result_inner);
             }
             return rpc_result;
@@ -693,7 +706,7 @@ static RPCHelpMan getblocktemplate()
             if (block.hashPrevBlock != pindexPrev->GetBlockHash())
                 return "inconclusive-not-best-prevblk";
             BlockValidationState state;
-            TestBlockValidity(state, chainman.GetParams(), active_chainstate, block, pindexPrev, GetAdjustedTime, false, true);
+            TestBlockValidity(state, chainman.GetParams(), active_chainstate, block, pindexPrev, false, true);
             return BIP22ValidationResult(state);
         }
 
@@ -1034,9 +1047,9 @@ static RPCHelpMan submitblock()
 
     bool new_block;
     auto sc = std::make_shared<submitblock_StateCatcher>(block.GetHash());
-    RegisterSharedValidationInterface(sc);
+    CHECK_NONFATAL(chainman.m_options.signals)->RegisterSharedValidationInterface(sc);
     bool accepted = chainman.ProcessNewBlock(blockptr, /*force_processing=*/true, /*min_pow_checked=*/true, /*new_block=*/&new_block);
-    UnregisterSharedValidationInterface(sc);
+    CHECK_NONFATAL(chainman.m_options.signals)->UnregisterSharedValidationInterface(sc);
     if (!new_block && accepted) {
         return "duplicate";
     }
